@@ -817,6 +817,44 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
         m_value = out_values;
         break; }
 
+    case coPointsGroups: {
+        // Same on-the-wire format as coPoints: "XxY, XxY, ...". The field edits a single
+        // group (the currently selected extruder's polygon), so parse it into one Vec2ds.
+        Vec2ds out_values;
+        str.Replace(" ", wxEmptyString, true);
+        if (!str.IsEmpty()) {
+            bool invalid_val = false;
+            wxStringTokenizer thumbnails(str, ",");
+            while (thumbnails.HasMoreTokens()) {
+                wxString token = thumbnails.GetNextToken();
+                double x, y;
+                wxStringTokenizer thumbnail(token, "x");
+                if (thumbnail.HasMoreTokens()) {
+                    wxString x_str = thumbnail.GetNextToken();
+                    if (x_str.ToDouble(&x) && thumbnail.HasMoreTokens()) {
+                        wxString y_str = thumbnail.GetNextToken();
+                        if (y_str.ToDouble(&y) && !thumbnail.HasMoreTokens()) {
+                            out_values.push_back(Vec2d(x, y));
+                            continue;
+                        }
+                    }
+                }
+                invalid_val = true;
+                break;
+            }
+
+            if (invalid_val) {
+                wxString text_value;
+                if (!m_value.empty())
+                    text_value = get_thumbnails_string(boost::any_cast<Vec2ds>(m_value));
+                set_value(text_value, true);
+                show_error(m_parent, format_wxstr(_L("Invalid format. Expected vector format: \"%1%\""),"XxY, XxY, ..." ));
+            }
+        }
+
+        m_value = out_values;
+        break; }
+
 	default:
 		break;
 	}

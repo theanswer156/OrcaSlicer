@@ -6068,6 +6068,10 @@ if (is_marlin_flavor)
             option.opt.full_width = true;
             optgroup->append_single_option_line(option, "printer_extruder_basic_information#extruder-printable-area");
 
+            Option option_movable         = optgroup->get_option("extruder_movable_area", extruder_idx);
+            option_movable.opt.full_width = true;
+            optgroup->append_single_option_line(option_movable, "printer_extruder_basic_information#extruder-movable-area");
+
             optgroup->m_on_change = [this](const t_config_option_key& opt_key, boost::any value)
             {
                 // The page edits the extruder selected on the variant switch.
@@ -6665,6 +6669,8 @@ void TabPrinter::toggle_options()
 
         toggle_option("extruder_printable_area", false, i);          // disable
         toggle_line("extruder_printable_area", m_preset_bundle->get_printer_extruder_count() == 2, i);  //hide
+        // extruder_movable_area is user-editable; only show it when multiple extruders are configured.
+        toggle_line("extruder_movable_area", m_preset_bundle->get_printer_extruder_count() == 2, i);  //hide
         toggle_option("extruder_printable_height", false, i);
         toggle_line("extruder_printable_height", m_preset_bundle->get_printer_extruder_count() == 2, i);
 
