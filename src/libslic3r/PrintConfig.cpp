@@ -1030,6 +1030,12 @@ void PrintConfigDef::init_common_params()
     def->gui_type = ConfigOptionDef::GUIType::one_string;
     def->set_default_value(new ConfigOptionPointsGroups{});
 
+    def = this->add("extruder_movable_area", coPointsGroups);
+    def->label = L("Extruder movable area");
+    def->mode = comAdvanced;
+    def->gui_type = ConfigOptionDef::GUIType::one_string;
+    def->set_default_value(new ConfigOptionPointsGroups{});
+
     def           = this->add("support_parallel_printheads", coBool);
     def->label    = L("Support parallel printheads");
     def->tooltip  = L("Enable printer settings for machines that can use multiple printheads in parallel.");
@@ -10227,6 +10233,7 @@ std::set<std::string> printer_extruder_options = {
     "default_nozzle_volume_type",
     "extruder_printable_area",
     "extruder_bed_exclude_volumes",
+    "extruder_movable_area",
     "extruder_printable_height",
     "min_layer_height",
     "max_layer_height",
