@@ -2541,6 +2541,10 @@ bool is_XL_printer(const PrintConfig &cfg);
 
 Polygon get_shared_poly(const std::vector<Pointfs>& extruder_polys);
 Points get_bed_shape(const DynamicPrintConfig &cfg, bool use_share = true);
+// Reachable region of every extruder, indexed by extruder id: the configured
+// extruder_movable_area polygons, or the printable area expanded outward by 2 mm
+// for extruders that have no polygon of their own.
+std::vector<Pointfs> get_extruder_movable_areas(const DynamicPrintConfig &cfg);
 Points get_bed_shape(const PrintConfig &cfg, bool use_share = false);
 Points get_bed_shape(const SLAPrinterConfig &cfg);
 struct BedExcludeRegion {

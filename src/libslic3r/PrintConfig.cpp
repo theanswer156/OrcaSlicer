@@ -13858,7 +13858,8 @@ Points get_bed_shape(const DynamicPrintConfig &config, bool use_share)
     if (use_share) {
         const ConfigOptionPointsGroups *extruder_area_opt = config.opt<ConfigOptionPointsGroups>("extruder_printable_area");
         if (extruder_area_opt && (extruder_area_opt->size() > 0)) {
-            const std::vector<Pointfs>& extruder_areas = extruder_area_opt->values;
+            //const std::vector<Pointfs>& extruder_areas = extruder_area_opt->values;
+            const std::vector<Pointfs>& extruder_areas = get_extruder_movable_areas(config);
             bed_poly = get_shared_poly(extruder_areas);
         }
         else
@@ -13885,6 +13886,49 @@ Points get_bed_shape(const PrintConfig &cfg, bool use_share)
         bed_poly.points = to_points(make_counter_clockwise(cfg.printable_area.values));
 
     return bed_poly.points;
+}
+
+// Outward expansion (mm) of the printable area used when an extruder has no movable area set.
+static constexpr double EXTRUDER_MOVABLE_AREA_DEFAULT_OFFSET = 2.0;
+ 
+std::vector<Pointfs> get_extruder_movable_areas(const DynamicPrintConfig &config)
+{
+    // Extruder count: nozzle_diameter is one of the per-extruder options, so its size is the
+    // number of extruders (same convention as the rest of the slicer).
+    const ConfigOptionFloats *nozzle_opt     = config.opt<ConfigOptionFloats>("nozzle_diameter");
+    const size_t              extruder_count = nozzle_opt != nullptr ? nozzle_opt->values.size() : 0;
+    if (extruder_count == 0)
+        return {};
+
+    // A profile may set the movable area per extruder. The value is stored as polygons in
+    // the same point format as bed_exclude_area ("XxY, XxY, ..."), '#' separating extruders,
+    // so reading values[extruder_id] reuses ConfigOptionPointsGroups' existing parsing.
+    const ConfigOptionPointsGroups *movable_opt = config.opt<ConfigOptionPointsGroups>("extruder_movable_area");
+
+    // Shared fallback for extruders without a polygon of their own: the printable area
+    // expanded outward. Expanded once, then shared, instead of once per extruder.
+    Pointfs default_area;
+    const ConfigOptionPoints *printable_opt = config.opt<ConfigOptionPoints>("printable_area");
+    if (printable_opt != nullptr && printable_opt->values.size() >= 3) {
+        Polygon printable;
+        printable.points = to_points(make_counter_clockwise(printable_opt->values));
+        Polygons expanded = expand(printable, float(scale_(EXTRUDER_MOVABLE_AREA_DEFAULT_OFFSET)));
+        if (expanded.empty()) {
+            default_area = printable_opt->values;
+        } else {
+            default_area.reserve(expanded.front().points.size());
+            for (const Point &pt : expanded.front().points)
+                default_area.emplace_back(unscale_(double(pt.x())), unscale_(double(pt.y())));
+        }
+    }
+
+    std::vector<Pointfs> area_by_extruder(extruder_count);
+    for (size_t i = 0; i < extruder_count; ++i) {
+        const bool has_own_area = movable_opt != nullptr && i < movable_opt->values.size() &&
+                                  movable_opt->values[i].size() >= 3;
+        area_by_extruder[i] = has_own_area ? movable_opt->values[i] : default_area;
+    }
+    return area_by_extruder;
 }
 
 Points get_bed_shape(const SLAPrinterConfig &cfg) { return to_points(make_counter_clockwise(cfg.printable_area.values)); }
