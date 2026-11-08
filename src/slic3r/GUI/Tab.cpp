@@ -3275,6 +3275,13 @@ void TabPrint::build()
         line.append_option(optgroup->get_option("internal_bridge_speed", 0));
         optgroup->append_line(line);
 
+        optgroup = page->new_optgroup(L("Corner slowdown"), L"param_speed", 15);
+        optgroup->append_single_option_line("enable_corner_slowdown");
+        optgroup->append_single_option_line("corner_slowdown_min_speed");
+        optgroup->append_single_option_line("corner_slowdown_distance");
+        optgroup->append_single_option_line("corner_slowdown_steps");
+        optgroup->append_single_option_line("corner_slowdown_angle");
+
         optgroup = page->new_optgroup(L("Travel speed"), L"param_travel_speed", 15);
         optgroup->append_single_option_line("travel_speed", "speed_settings_travel", 0);
 

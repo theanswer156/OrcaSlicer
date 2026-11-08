@@ -1368,6 +1368,13 @@ static std::vector<std::string> s_Preset_print_options{
     "overhang_2_4_speed",
     "overhang_3_4_speed",
     "overhang_4_4_speed",
+    // Orca: corner slowdown keys — without them the keys never enter preset configs,
+    // and opt_bool()/opt_float() on them in the GUI dereference a null option.
+    "enable_corner_slowdown",
+    "corner_slowdown_min_speed",
+    "corner_slowdown_distance",
+    "corner_slowdown_steps",
+    "corner_slowdown_angle",
     "initial_layer_infill_speed",
     "only_one_wall_top",
     "timelapse_type",

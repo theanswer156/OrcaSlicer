@@ -1569,6 +1569,12 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloatsOrPercentsNullable, overhang_2_4_speed))
     ((ConfigOptionFloatsOrPercentsNullable, overhang_3_4_speed))
     ((ConfigOptionFloatsOrPercentsNullable, overhang_4_4_speed))
+    // Orca: corner slowdown — graded deceleration/acceleration around sharp wall corners.
+    ((ConfigOptionBool,                 enable_corner_slowdown))
+    ((ConfigOptionFloatOrPercent,       corner_slowdown_min_speed))
+    ((ConfigOptionFloat,                corner_slowdown_distance))
+    ((ConfigOptionInt,                  corner_slowdown_steps))
+    ((ConfigOptionFloat,                corner_slowdown_angle))
     ((ConfigOptionBool,                 only_one_wall_top))
 
     //SoftFever

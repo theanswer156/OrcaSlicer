@@ -2046,6 +2046,60 @@ void PrintConfigDef::init_fff_params()
     def->nullable = true;
     def->set_default_value(new ConfigOptionFloatsOrPercentsNullable{FloatOrPercent(0, false)});
 
+    def = this->add("enable_corner_slowdown", coBool);
+    def->label = L("Slow down for corners");
+    def->category = L("Speed");
+    def->tooltip = L("Enable this option to slow down gradually when approaching sharp corners on walls and to "
+                     "accelerate gradually after leaving them. Entering a corner at full wall speed causes corner "
+                     "bulging and ringing; stepping the speed down before the corner and back up after it gives "
+                     "the planner a smoother speed profile. A path vertex is treated as a corner when its turn "
+                     "angle reaches the corner angle threshold; smoother curves keep full speed.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("corner_slowdown_min_speed", coFloatOrPercent);
+    def->label = L("Corner speed");
+    def->category = L("Speed");
+    def->tooltip = L("Speed used right at the corner when slowing down for corners. "
+                     "It can be an absolute value in mm/s or a percentage of the outer wall speed.");
+    def->sidetext = L("mm/s or %");
+    def->ratio_over = "outer_wall_speed";
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloatOrPercent(50, true));
+
+    def = this->add("corner_slowdown_distance", coFloat);
+    def->label = L("Slowdown distance");
+    def->category = L("Speed");
+    def->tooltip = L("Distance before and after a corner over which the speed is stepped down to the corner speed "
+                     "and back up. Ideally at least the distance the toolhead needs to decelerate from wall speed "
+                     "to the corner speed.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(3.));
+
+    def = this->add("corner_slowdown_steps", coInt);
+    def->label = L("Slowdown steps");
+    def->category = L("Speed");
+    def->tooltip = L("Number of speed steps used to ramp from wall speed down to the corner speed and back up. "
+                     "Higher values give smoother transitions but add more speed changes to the G-code.");
+    def->min = 1;
+    def->max = 10;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(3));
+
+    def = this->add("corner_slowdown_angle", coFloat);
+    def->label = L("Corner angle threshold");
+    def->category = L("Speed");
+    def->tooltip = L("Minimum turn angle of a wall path vertex for it to be treated as a corner. "
+                     "Vertices turning less than this, for example on smooth curves, keep full speed.");
+    def->sidetext = u8"°";	// degrees, don't need translation
+    def->min = 0;
+    def->max = 180;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(30.));
+
     def = this->add("bridge_speed", coFloats);
     def->label = L("External");
     def->category = L("Speed");

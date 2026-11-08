@@ -9185,6 +9185,203 @@ static bool overhang_fan_active(float overlap, int overhang_fan_threshold, Extru
     return overlap_threshold >= 0.f && overlap <= overlap_threshold;
 }
 
+// Orca: corner slowdown — graded deceleration before and acceleration after sharp wall corners.
+// The helpers below build a per-point speed profile of a wall path: every vertex whose turn angle
+// reaches a threshold gets a symmetric speed window around it, divided into `steps` bands; the band
+// containing the corner prints at the configured corner speed, each band further out one step
+// faster, and the path outside all windows at the full path speed. The output follows the same
+// convention as ExtrusionQualityEstimator::estimate_extrusion_quality(): the points cover the whole
+// path and each point carries the speed of the segment starting at it, so the lists can be merged
+// and fed to the segmented-extrusion emission path of GCode::_extrude().
+
+// Cumulative distance (mm) of each polyline vertex from the path start.
+static std::vector<double> path_cumulative_distances(const Polyline3 &polyline)
+{
+    std::vector<double> distances(polyline.size(), 0.);
+    for (size_t i = 1; i < polyline.size(); ++i)
+        distances[i] = distances[i - 1] + (polyline.points[i] - polyline.points[i - 1]).cast<double>().norm() * SCALING_FACTOR;
+    return distances;
+}
+
+// Point on the polyline at distance `s` (mm) from its start; `distances` is
+// path_cumulative_distances() of the same polyline.
+static Point3 point_at_path_distance(const Polyline3 &polyline, const std::vector<double> &distances, double s)
+{
+    if (s <= 0.)
+        return polyline.points.front();
+    if (s >= distances.back())
+        return polyline.points.back();
+    // First vertex past s; the segment [i-1, i] contains s.
+    const size_t i = size_t(std::distance(distances.begin(), std::upper_bound(distances.begin(), distances.end(), s)));
+    const Vec3d  a = polyline.points[i - 1].cast<double>();
+    const Vec3d  b = polyline.points[i].cast<double>();
+    const double seg_len_mm = (b - a).norm() * SCALING_FACTOR;
+    const double t          = seg_len_mm > 0. ? (s - distances[i - 1]) / seg_len_mm : 0.;
+    // The polyline points (and thus p) are already in scaled coordinates; only round to the
+    // integer grid. Do NOT call scaled() here — that converts mm to scaled units and would
+    // inflate the point by another 1/SCALING_FACTOR.
+    const Vec3d  p = a + (b - a) * t;
+    return Point3(coord_t(std::lround(p.x())), coord_t(std::lround(p.y())), coord_t(std::lround(p.z())));
+}
+
+// Turn angle (radians) of the path at vertex `index`, measured in the XY plane. 0 means straight;
+// degenerate (nearly zero-length) legs report 0 so duplicated points never trigger a corner.
+static double path_turn_angle(const Points3 &points, size_t index)
+{
+    const Vec2d  leg_in  = (points[index] - points[index - 1]).cast<double>().head<2>();
+    const Vec2d  leg_out = (points[index + 1] - points[index]).cast<double>().head<2>();
+    const double len_in  = leg_in.norm();
+    const double len_out = leg_out.norm();
+    if (len_in < SCALED_EPSILON || len_out < SCALED_EPSILON)
+        return 0.;
+    const double cosine = std::clamp(leg_in.dot(leg_out) / (len_in * len_out), -1., 1.);
+    return std::acos(cosine);
+}
+
+// Builds the per-point speed profile of `path` with graded slowdown around its corners, or an
+// empty vector when the path has no corner worth slowing for. `full_speed` and `corner_speed`
+// are mm/s, `window` is the ramp reach (mm) on each side of a corner, `steps` the number of
+// graded speed bands inside the window, and `min_turn_angle` the threshold (radians) above
+// which a vertex counts as a corner.
+static std::vector<ProcessedPoint> corner_slowdown_points(const ExtrusionPath &path, double full_speed, double corner_speed,
+                                                          double window, int steps, double min_turn_angle)
+{
+    const Points3 &points = path.polyline.points;
+    if (points.size() < 3 || window <= 0. || steps < 1 || corner_speed >= full_speed)
+        return {};
+
+    const std::vector<double> distances    = path_cumulative_distances(path.polyline);
+    const double              total_length = distances.back();
+
+    // Corner positions as distances along the path. Only interior vertices can be corners: the
+    // path ends join the neighbouring paths of the loop, whose junctions are left to the
+    // firmware planner like any other joint between two extrusion moves.
+    std::vector<double> corners;
+    for (size_t i = 1; i + 1 < points.size(); ++i)
+        if (path_turn_angle(points, i) >= min_turn_angle)
+            corners.push_back(distances[i]);
+    if (corners.empty())
+        return {};
+
+    const double min_ratio  = corner_speed / full_speed;
+    const double band_width = window / steps;
+    // Speed factor at distance s from the path start: the lowest band of any window covering s.
+    // Band level 0 sits at the corner and prints at min_ratio, each level further out one step
+    // closer to full speed, and outside the window the path runs at full speed. Where windows of
+    // two corners overlap, the lower (safer) factor wins.
+    auto speed_factor_at = [&](double s) {
+        double factor = 1.;
+        for (const double corner : corners) {
+            const double d = std::abs(s - corner);
+            if (d < window) {
+                const int level = std::min(int(d / band_width), steps - 1);
+                factor = std::min(factor, min_ratio + (1. - min_ratio) * double(level) / steps);
+            }
+        }
+        return factor;
+    };
+
+    // Split distances: every original vertex (to preserve the path geometry exactly) plus every
+    // band boundary of every corner window (so each emitted segment has a single constant speed).
+    std::vector<double> splits = distances;
+    for (const double corner : corners)
+        for (int k = 1; k <= steps; ++k) {
+            const double offset = k * band_width;
+            if (corner - offset > 0.)           splits.push_back(corner - offset);
+            if (corner + offset < total_length) splits.push_back(corner + offset);
+        }
+    std::sort(splits.begin(), splits.end());
+    splits.erase(std::unique(splits.begin(), splits.end(), [](double a, double b) { return b - a < 1e-4; }), splits.end());
+
+    std::vector<ProcessedPoint> out;
+    out.reserve(splits.size());
+    for (size_t i = 0; i < splits.size(); ++i) {
+        ProcessedPoint point;
+        point.p = point_at_path_distance(path.polyline, distances, splits[i]);
+        // All band boundaries are split points, so the factor is constant on a segment and can be
+        // sampled at its midpoint. The last point's speed is unused by the emitter.
+        const double sample = i + 1 < splits.size() ? 0.5 * (splits[i] + splits[i + 1]) : splits[i];
+        point.speed   = float(full_speed * speed_factor_at(sample));
+        point.overlap = 1.0f; // fully supported: this helper does not evaluate overhangs
+        out.push_back(point);
+    }
+    return out;
+}
+
+// Distances (mm) of `points` along the polyline they were generated from, in mm from the path
+// start. Such points are ordered along the path and lie on its segments (they are its vertices or
+// interpolations of them), so a monotone walk over the segments locates each one; the result is
+// clamped non-decreasing to absorb the rounding of the scaled coordinates.
+static std::vector<double> path_distances_of_points(const Polyline3 &polyline, const std::vector<double> &distances,
+                                                    const std::vector<ProcessedPoint> &points)
+{
+    std::vector<double> out;
+    out.reserve(points.size());
+    size_t seg = 0;
+    for (const ProcessedPoint &point : points) {
+        const Vec3d q = point.p.cast<double>();
+        for (;;) {
+            const Vec3d  a  = polyline.points[seg].cast<double>();
+            const Vec3d  b  = polyline.points[seg + 1].cast<double>();
+            const Vec3d  ab = b - a;
+            const double l2 = ab.squaredNorm();
+            // Parameter of q on this segment; t at/past 1 with segments left means q is further along.
+            const double t = l2 > 0. ? (q - a).dot(ab) / l2 : 2.;
+            if (t < 1. - 1e-9 || seg + 2 >= polyline.points.size()) {
+                double d = distances[seg] + std::clamp(t, 0., 1.) * std::sqrt(l2) * SCALING_FACTOR;
+                if (!out.empty())
+                    d = std::max(d, out.back());
+                out.push_back(d);
+                break;
+            }
+            ++seg;
+        }
+    }
+    return out;
+}
+
+// Merges two per-point speed lists of the same path into one list covering the whole path. Each
+// segment prints at the lower of the two source speeds; the overhang overlap used by the fan logic
+// is taken from `base`. Both lists must be non-empty and follow the convention of
+// corner_slowdown_points() (points ordered along the path, speed of the segment starting at them).
+static std::vector<ProcessedPoint> merge_segmented_speed_points(const Polyline3 &polyline, const std::vector<ProcessedPoint> &base,
+                                                                const std::vector<ProcessedPoint> &overlay)
+{
+    const std::vector<double> distances   = path_cumulative_distances(polyline);
+    const std::vector<double> base_dist   = path_distances_of_points(polyline, distances, base);
+    const std::vector<double> overlay_dist = path_distances_of_points(polyline, distances, overlay);
+
+    std::vector<double> splits = base_dist;
+    splits.insert(splits.end(), overlay_dist.begin(), overlay_dist.end());
+    std::sort(splits.begin(), splits.end());
+    splits.erase(std::unique(splits.begin(), splits.end(), [](double a, double b) { return b - a < 1e-4; }), splits.end());
+
+    // Value of a source list at distance s: its points carry the value of the segment starting at
+    // them, so the value at s is the last entry at or before s.
+    auto speed_at = [](const std::vector<ProcessedPoint> &pts, const std::vector<double> &dist, double s) {
+        auto it = std::upper_bound(dist.begin(), dist.end(), s);
+        return pts[it == dist.begin() ? 0 : size_t(std::distance(dist.begin(), it)) - 1].speed;
+    };
+    auto overlap_at = [](const std::vector<ProcessedPoint> &pts, const std::vector<double> &dist, double s) {
+        auto it = std::upper_bound(dist.begin(), dist.end(), s);
+        return pts[it == dist.begin() ? 0 : size_t(std::distance(dist.begin(), it)) - 1].overlap;
+    };
+
+    std::vector<ProcessedPoint> out;
+    out.reserve(splits.size());
+    for (size_t i = 0; i < splits.size(); ++i) {
+        // Sample inside the segment so a value changing exactly at a boundary is attributed to the
+        // segment it belongs to. The last point's speed is unused by the emitter.
+        const double sample = i + 1 < splits.size() ? 0.5 * (splits[i] + splits[i + 1]) : splits[i];
+        ProcessedPoint point;
+        point.p       = point_at_path_distance(polyline, distances, splits[i]);
+        point.speed   = std::min(speed_at(base, base_dist, sample), speed_at(overlay, overlay_dist, sample));
+        point.overlap = overlap_at(base, base_dist, sample);
+        out.push_back(point);
+    }
+    return out;
+}
+
 std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_description, double speed)
 {
     std::string gcode;
@@ -9635,6 +9832,39 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                         return (previous.overlap <= fan_overlap_threshold) != (current.overlap <= fan_overlap_threshold);
                     }) != new_points.end();
             }
+    }
+
+    // Orca: corner slowdown — graded deceleration before and acceleration after sharp corners on
+    // walls, layered on top of the segmented-extrusion machinery of the overhang feature above.
+    // The path is split at every speed-band boundary of every corner window, so each emitted
+    // segment carries one constant speed. When overhang processing already produced a point list
+    // for this path, both lists are merged taking the lower speed per segment, so a corner that is
+    // also an overhang keeps the slower of the two speeds. Sloped (scarf seam) paths are excluded:
+    // the scarf already ramps its own speed/flow and the corner windows would fight it.
+    // Note: like the overhang feature, segmented emission currently outputs straight moves only,
+    // so arc fitting is bypassed on paths with slowed corners. The geometry is preserved because
+    // every original polyline vertex is kept in the point list.
+    if (m_config.enable_corner_slowdown.value && is_perimeter(path.role()) && sloped == nullptr) {
+        // Corner speed resolves against this path's final speed, after every cap (volumetric
+        // limit, first layers, resonance avoidance, ...) has already been applied to it.
+        double corner_speed = m_config.corner_slowdown_min_speed.get_abs_value(speed);
+        corner_speed = std::clamp(corner_speed, 1., speed);
+        // A slowdown below 1 mm/s is not worth splitting the path for, matching the tolerance
+        // used for overhang speed changes below.
+        if (m_config.corner_slowdown_distance.value > 0. && corner_speed < speed - 1.) {
+            std::vector<ProcessedPoint> corner_points =
+                corner_slowdown_points(path, speed, corner_speed, m_config.corner_slowdown_distance.value,
+                                       std::max(m_config.corner_slowdown_steps.value, 1),
+                                       m_config.corner_slowdown_angle.value * M_PI / 180.);
+            if (!corner_points.empty()) {
+                if (new_points.empty())
+                    new_points = std::move(corner_points);
+                else
+                    new_points = merge_segmented_speed_points(path.polyline, new_points, corner_points);
+                // A corner always prints below the path speed, so segmented emission is required.
+                requires_segmented_extrusion = true;
+            }
+        }
     }
 
     double F = speed * 60;  // convert mm/sec to mm/min

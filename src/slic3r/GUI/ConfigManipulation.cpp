@@ -1243,6 +1243,12 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
 
     toggle_line("slowdown_for_curled_perimeters", has_overhang_speed, variant_index, overhang_speed_reason);
 
+    // Orca: corner slowdown sub-settings only make sense when the feature itself is on.
+    bool has_corner_slowdown = config->opt_bool("enable_corner_slowdown");
+    const wxString corner_slowdown_reason = _L("Enable slowing down for corners to use this setting.");
+    for (auto el : {"corner_slowdown_min_speed", "corner_slowdown_distance", "corner_slowdown_steps", "corner_slowdown_angle"})
+        toggle_line(el, has_corner_slowdown, -1, corner_slowdown_reason);
+
     toggle_line("flush_into_objects", !is_global_config, -1, _L("This setting is available in object settings rather than global print settings."));
 
     toggle_line("support_interface_not_for_body",config->opt_int("support_interface_filament")&&!config->opt_int("support_filament"), -1,
